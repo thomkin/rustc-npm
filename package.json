@@ -1,5 +1,5 @@
 {
-  "name": "rustc",
+  "name": "rustc-npm",
   "version": "1.92.0",
   "description": "This install the rust build envronment to the project so that we can use rust compiler and toolss",
   "scripts": {
