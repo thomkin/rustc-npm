@@ -4,7 +4,7 @@ import path from "node:path";
 
 const BINARY_NAME = "rustc";
 
-const PLATFORMS: Record<string, string> = {
+const PLATFORMS = {
   "darwin-arm64": "https://static.rust-lang.org/dist/rust-1.92.0-aarch64-apple-darwin.tar.xz",
   "darwin-x64": "https://static.rust-lang.org/dist/rust-1.92.0-x86_64-apple-darwin.tar.xz",
   "linux-x64": "https://static.rust-lang.org/dist/rust-1.92.0-x86_64-unknown-linux-gnu.tar.xz",
@@ -29,21 +29,44 @@ async function download() {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
 
-    // FIX: Convert to ArrayBuffer to ensure data is fully received
-    const data = await response.arrayBuffer();
-    
-    // Check if we actually got data
-    if (data.byteLength === 0) {
-      throw new Error("Downloaded file is empty (0 bytes).");
+    // 1. Setup the reader and progress tracking
+    const totalSize = parseInt(response.headers.get("content-length") || "0", 10);
+    const reader = response.body.getReader();
+    let receivedLength = 0;
+
+    // 2. Setup the Bun File Writer (Direct to disk streaming)
+    const file = Bun.file(tempArchivePath);
+    const writer = file.writer();
+
+    console.log("📥 Starting download...");
+
+    // 3. Read chunks and update console
+    while (true) {
+      const { done, value } = await reader.read();
+
+      if (done) break;
+
+      // Write chunk to file
+      writer.write(value);
+      receivedLength += value.length;
+
+      // Calculate and display progress
+      if (totalSize) {
+        const percent = ((receivedLength / totalSize) * 100).toFixed(1);
+        const downloadedMB = (receivedLength / 1024 / 1024).toFixed(2);
+        const totalMB = (totalSize / 1024 / 1024).toFixed(2);
+        // \r moves the cursor back to the start of the line for a clean overwrite
+        process.stdout.write(`\r   > ${percent}% [${downloadedMB}MB / ${totalMB}MB]`);
+      } else {
+        process.stdout.write(`\r   > Received: ${(receivedLength / 1024 / 1024).toFixed(2)} MB`);
+      }
     }
 
-    console.log(`💾 Saving ${data.byteLength} bytes to disk...`);
-    await Bun.write(tempArchivePath, data);
+    // Ensure the writer finishes flushing to disk
+    await writer.end();
+    process.stdout.write("\n✅ Download complete!\n");
 
     console.log("📦 Extracting...");
-
-    // -x: extract, -f: file, -C: destination
-    // --strip-components=1 removes the top-level "rust-1.92.0-..." folder
     const tarProcess = Bun.spawn(["tar", "-xf", tempArchivePath, "-C", __dirname, "--strip-components=1"], {
       stdout: "inherit",
       stderr: "inherit",
@@ -52,18 +75,16 @@ async function download() {
     const exitCode = await tarProcess.exited;
     if (exitCode !== 0) throw new Error("Tar extraction failed.");
 
-    // Cleanup
     await rm(tempArchivePath);
 
-    // Verify
     const binPath = path.join(__dirname, "bin", BINARY_NAME);
     if (existsSync(binPath)) {
       chmodSync(binPath, 0o755);
-      console.log(`✅ Success! Binary located at: ${binPath}`);
+      console.log(`🚀 Success! Rust toolchain ready at: ${__dirname}`);
     }
 
   } catch (error) {
-    console.error("❌ Installation failed:", error);
+    console.error("\n❌ Installation failed:", error);
     if (existsSync(tempArchivePath)) await rm(tempArchivePath);
     process.exit(1);
   }
