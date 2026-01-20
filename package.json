@@ -4,7 +4,6 @@
   "description": "This install the rust build envronment to the project so that we can use rust compiler and toolss",
   "scripts": {
     "postinstall": "bun run install.ts",
-    "prepare": "bun run install.ts"
   },
   "bin": {
     "rustc-local": "./rustc/bin/rustc",
