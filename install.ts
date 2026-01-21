@@ -57,6 +57,10 @@ async function setupIndependentRust(unpackedPath: string) {
   const stdLibDest = path.join(libPath, 'rustlib');
   copyDir(stdLibSrc, stdLibDest);
 
+  if (existsSync(path.join(__dirname, 'dist'))){
+    rmSync(path.join(__dirname, 'dist'), { recursive: true, force: true });
+  }
+
   mkdirSync(path.join(__dirname, 'dist'))
   copyDir(distPath, path.join(__dirname, 'dist'));
 
@@ -154,7 +158,7 @@ async function download() {
       const exitCode = tarProcess.status;
       if (exitCode !== 0) throw new Error("Tar extraction failed.");
 
-      setupIndependentRust(downloadPath);
+      setupIndependentRust(extractPath);
 
       await rm(tempArchivePath);
 
