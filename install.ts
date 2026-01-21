@@ -15,6 +15,13 @@ const PLATFORMS = {
     "https://static.rust-lang.org/dist/rust-1.92.0-x86_64-unknown-linux-gnu.tar.xz",
 };
 
+const ANDROID_STDS = [
+  "https://static.rust-lang.org/dist/rust-std-1.92.0-i686-linux-android.tar.gz",
+  "https://static.rust-lang.org/dist/rust-std-1.92.0-x86_64-linux-android.tar.gz",
+  "https://static.rust-lang.org/dist/rust-std-1.92.0-armv7-linux-androideabi.tar.xz",
+  "https://static.rust-lang.org/dist/rust-std-1.92.0-aarch64-linux-android.tar.xz",
+];
+
 async function setupIndependentRust(unpackedPath: string) {
   const distPath = path.join(unpackedPath, "dist");
   const binPath = path.join(distPath, "bin");
@@ -40,7 +47,17 @@ async function setupIndependentRust(unpackedPath: string) {
 
   // 2. Map tarball folders to standard layout
   // Note: Adjust the 'rust-std' folder name if you change architectures
-  const targetTriple = "x86_64-unknown-linux-gnu";
+  const platformKey = `${process.platform}-${process.arch}`;
+  const targetTriple =
+    platformKey === "linux-x64"
+      ? "x86_64-unknown-linux-gnu"
+      : platformKey === "darwin-arm64"
+        ? "aarch64-apple-darwin"
+        : platformKey === "darwin-x64"
+          ? "x86_64-apple-darwin"
+          : "";
+
+  console.log(`📦 Assembling toolchain for ${targetTriple}...`);
 
   console.log("📦 Copying binaries and libraries...");
 
@@ -62,6 +79,29 @@ async function setupIndependentRust(unpackedPath: string) {
   const stdLibDest = path.join(libPath, "rustlib");
   copyDir(stdLibSrc, stdLibDest);
 
+  // Copy additional Android standard libraries if on Linux
+  if (process.platform === "linux") {
+    console.log("🤖 Copying Android standard libraries...");
+    const androidTargets = [
+      "i686-linux-android",
+      "x86_64-linux-android",
+      "armv7-linux-androideabi",
+      "aarch64-linux-android",
+    ];
+
+    for (const target of androidTargets) {
+      const androidStdSrc = path.join(
+        unpackedPath,
+        `rust-std-${target}`,
+        "lib",
+        "rustlib",
+        target,
+      );
+      const androidStdDest = path.join(libPath, "rustlib", target);
+      copyDir(androidStdSrc, androidStdDest);
+    }
+  }
+
   if (existsSync(path.join(__dirname, "dist"))) {
     rmSync(path.join(__dirname, "dist"), { recursive: true, force: true });
   }
@@ -72,34 +112,17 @@ async function setupIndependentRust(unpackedPath: string) {
   console.log("✅ Toolchain assembled successfully.");
 }
 
-const platformKey = `${process.platform}-${process.arch}`;
-const url = (PLATFORMS as any)[platformKey];
-
-async function download() {
-  if (!url) {
-    console.error(`❌ Unsupported platform: ${platformKey}`);
-    process.exit(1);
-  }
-
+async function downloadAndExtract(url: string, extractPath: string) {
   const tempArchivePath = path.join(
     __dirname,
     "download",
-    "temp-archive.tar.xz",
+    path.basename(new URL(url).pathname),
   );
-  // rmSync(tempArchivePath, {recursive: true});
+
   const downloadPath = path.join(__dirname, "download");
-  const extractPath = path.join(__dirname, "extract");
-
-  if (existsSync(downloadPath)) {
-    rmSync(downloadPath, { recursive: true, force: true });
+  if (!existsSync(downloadPath)) {
+    mkdirSync(downloadPath, { recursive: true });
   }
-
-  if (existsSync(extractPath)) {
-    rmSync(extractPath, { recursive: true, force: true });
-  }
-
-  mkdirSync(downloadPath, { recursive: true });
-  mkdirSync(extractPath, { recursive: true });
 
   try {
     console.log(`📡 Fetching: ${url}`);
@@ -109,7 +132,6 @@ async function download() {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
 
-    // 1. Setup the reader and progress tracking
     const totalSize = parseInt(
       response.headers.get("content-length") || "0",
       10,
@@ -117,39 +139,24 @@ async function download() {
     const reader = response?.body?.getReader?.();
     let receivedLength = 0;
 
-    // 2. Setup the Bun File Writer (Direct to disk streaming)
-    // const file = Bun.file(tempArchivePath);
-    // const writer = file.writer();
-
-    // Note: 'node:fs/promises' doesn't have createWriteStream,
-    // you use the base 'node:fs' package for streams.
-
-    // 1. Setup the File Path
-
-    // 2. Setup the Node.js WriteStream (Direct to disk streaming)
     const writer = createWriteStream(tempArchivePath);
 
-    console.log("📥 Starting download...");
+    console.log(`📥 Downloading ${path.basename(tempArchivePath)}...`);
 
-    // 3. Read chunks and update console
     while (true) {
-      const { done, value } = await reader?.read?.() || {done: false, value: ""};
-
+      const { done, value } = (await reader?.read?.()) || {
+        done: true,
+        value: undefined,
+      };
       if (done) break;
 
-      // Write chunk to file
       writer.write(value);
-
       receivedLength += value.length;
 
-      // Calculate and display progress
       if (totalSize) {
         const percent = ((receivedLength / totalSize) * 100).toFixed(1);
-        const downloadedMB = (receivedLength / 1024 / 1024).toFixed(2);
-        const totalMB = (totalSize / 1024 / 1024).toFixed(2);
-        // \r moves the cursor back to the start of the line for a clean overwrite
         process.stdout.write(
-          `\r   > ${percent}% [${downloadedMB}MB / ${totalMB}MB]`,
+          `\r   > ${percent}% [${(receivedLength / 1024 / 1024).toFixed(2)}MB / ${(totalSize / 1024 / 1024).toFixed(2)}MB]`,
         );
       } else {
         process.stdout.write(
@@ -158,45 +165,78 @@ async function download() {
       }
     }
 
-    // Ensure the writer finishes flushing to disk
     writer.end();
-    writer.close(async () => {
-      process.stdout.write("\n✅ Download complete!\n");
+    return new Promise<void>((resolve, reject) => {
+      writer.on("finish", async () => {
+        process.stdout.write("\n✅ Download complete!\n");
+        console.log(`📦 Extracting ${path.basename(tempArchivePath)}...`);
 
-      console.log("📦 Extracting...");
-      const tarProcess = spawnSync(
-        [
+        const tarProcess = spawnSync(
           "tar",
-          "-xf",
-          tempArchivePath,
-          "--strip-components=1",
-          `-C ${extractPath}`,
-        ].join(" "),
-        {
-          stdio: "inherit",
-          shell: true,
-          cwd: extractPath,
-        },
-      );
+          ["-xf", tempArchivePath, "--strip-components=1", `-C`, extractPath],
+          {
+            stdio: "inherit",
+            cwd: extractPath,
+          },
+        );
 
-      const exitCode = tarProcess.status;
-      if (exitCode !== 0) throw new Error("Tar extraction failed.");
-
-      setupIndependentRust(extractPath);
-
-      await rm(tempArchivePath);
-
-      const binPath = path.join(__dirname, "bin", BINARY_NAME);
-      if (existsSync(binPath)) {
-        chmodSync(binPath, 0o755);
-        console.log(`🚀 Success! Rust toolchain ready at: ${__dirname}`);
-      }
+        if (tarProcess.status !== 0) {
+          reject(new Error(`Tar extraction failed for ${url}`));
+        } else {
+          await rm(tempArchivePath);
+          resolve();
+        }
+      });
+      writer.on("error", reject);
     });
   } catch (error) {
-    console.error("\n❌ Installation failed:", error);
+    console.error(`\n❌ Failed to download ${url}:`, error);
     if (existsSync(tempArchivePath)) await rm(tempArchivePath);
+    throw error;
+  }
+}
+
+async function run() {
+  const platformKey = `${process.platform}-${process.arch}`;
+  const mainUrl = (PLATFORMS as any)[platformKey];
+
+  if (!mainUrl) {
+    console.error(`❌ Unsupported platform: ${platformKey}`);
+    process.exit(1);
+  }
+
+  const extractPath = path.join(__dirname, "extract");
+  if (existsSync(extractPath)) {
+    rmSync(extractPath, { recursive: true, force: true });
+  }
+  mkdirSync(extractPath, { recursive: true });
+
+  try {
+    // 1. Download and extract main toolchain
+    await downloadAndExtract(mainUrl, extractPath);
+
+    // 2. Download and extract Android std libs if on Linux
+    if (process.platform === "linux") {
+      console.log("🤖 Downloading Android standard libraries...");
+      for (const url of ANDROID_STDS) {
+        await downloadAndExtract(url, extractPath);
+      }
+    }
+
+    // 3. Assemble the toolchain
+    await setupIndependentRust(extractPath);
+
+    const binPath = path.join(__dirname, "dist", "bin", BINARY_NAME);
+    if (existsSync(binPath)) {
+      chmodSync(binPath, 0o755);
+      console.log(
+        `🚀 Success! Rust toolchain ready at: ${path.join(__dirname, "dist")}`,
+      );
+    }
+  } catch (error) {
+    console.error("\n❌ Installation failed:", error);
     process.exit(1);
   }
 }
 
-download();
+run();
